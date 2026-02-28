@@ -264,6 +264,18 @@ func (ctx *renderContext) handleList(n *ast.List, entering bool) {
 			style = slack.RTEListOrdered
 		}
 		indent := len(ctx.listStack)
+
+		// Before pushing a nested list, flush the current list item's
+		// inline elements so they are not destroyed by the nested list's
+		// handleListItem entering calls.
+		if indent > 0 && len(ctx.inlineElements) > 0 {
+			sec := ctx.flushInlineToSection()
+			if sec != nil {
+				frame := &ctx.listStack[len(ctx.listStack)-1]
+				frame.items = append(frame.items, sec)
+			}
+		}
+
 		ctx.listStack = append(ctx.listStack, listFrame{
 			style:  style,
 			indent: indent,
@@ -275,34 +287,30 @@ func (ctx *renderContext) handleList(n *ast.List, entering bool) {
 		frame := ctx.listStack[len(ctx.listStack)-1]
 		ctx.listStack = ctx.listStack[:len(ctx.listStack)-1]
 
-		list := slack.NewRichTextList(frame.style, frame.indent, frame.items...)
-
 		if len(ctx.listStack) == 0 {
 			// Top-level list: emit as a RichTextBlock.
-			// Collect all elements: the list itself plus any nested lists
+			// Collect the list itself (if non-empty) plus any nested lists
 			// as sibling elements in the same RichTextBlock.
-			elements := []slack.RichTextElement{list}
-			elements = append(elements, flattenNestedLists(frame.nestedLists)...)
-			ctx.emitBlock(slack.NewRichTextBlock("", elements...))
+			var elements []slack.RichTextElement
+			if len(frame.items) > 0 {
+				elements = append(elements, slack.NewRichTextList(frame.style, frame.indent, frame.items...))
+			}
+			elements = append(elements, frame.nestedLists...)
+			if len(elements) > 0 {
+				ctx.emitBlock(slack.NewRichTextBlock("", elements...))
+			}
 		} else {
 			// Nested list: store in parent frame's nestedLists rather than
 			// embedding as a child element (Slack rejects nested rich_text_list
-			// inside rich_text_list elements).
+			// inside rich_text_list elements). Also propagate any deeply
+			// nested lists upward to maintain sibling ordering.
 			parentFrame := &ctx.listStack[len(ctx.listStack)-1]
-			parentFrame.nestedLists = append(parentFrame.nestedLists, list)
-			// Also propagate any deeply nested lists upward.
+			if len(frame.items) > 0 {
+				parentFrame.nestedLists = append(parentFrame.nestedLists, slack.NewRichTextList(frame.style, frame.indent, frame.items...))
+			}
 			parentFrame.nestedLists = append(parentFrame.nestedLists, frame.nestedLists...)
 		}
 	}
-}
-
-// flattenNestedLists converts nested list pointers to RichTextElement interface slice.
-func flattenNestedLists(lists []*slack.RichTextList) []slack.RichTextElement {
-	result := make([]slack.RichTextElement, len(lists))
-	for i, l := range lists {
-		result[i] = l
-	}
-	return result
 }
 
 // handleListItem processes an ast.ListItem node.

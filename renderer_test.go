@@ -444,6 +444,18 @@ func TestConvert_NestedList(t *testing.T) {
 	if list.Indent != 0 {
 		t.Errorf("expected indent 0 for parent list, got %d", list.Indent)
 	}
+	if len(list.Elements) != 2 {
+		t.Errorf("expected 2 items in parent list ('Parent' and 'Another parent'), got %d", len(list.Elements))
+	}
+	// Verify parent list item text survived conversion.
+	// Goldmark splits text at spaces into multiple text nodes, so check
+	// individual words rather than multi-word phrases.
+	jsonStr := blockJSON(t, blocks)
+	for _, text := range []string{"Parent", "Another", "parent"} {
+		if !strings.Contains(jsonStr, text) {
+			t.Errorf("expected %q text in output: %s", text, jsonStr)
+		}
+	}
 	// The nested list should be a sibling element with indent 1
 	nestedList, ok := rt.Elements[1].(*slack.RichTextList)
 	if !ok {
@@ -454,6 +466,11 @@ func TestConvert_NestedList(t *testing.T) {
 	}
 	if len(nestedList.Elements) != 2 {
 		t.Errorf("expected 2 items in nested list, got %d", len(nestedList.Elements))
+	}
+	for _, text := range []string{"Child", "A", "B"} {
+		if !strings.Contains(jsonStr, text) {
+			t.Errorf("expected %q text in output: %s", text, jsonStr)
+		}
 	}
 }
 
@@ -785,6 +802,13 @@ func TestConvert_EdgeCases(t *testing.T) {
 				if list.Style != slack.RTEListBullet {
 					t.Errorf("expected outer bullet list, got %q", list.Style)
 				}
+				// Verify parent item text survived.
+				jsonStr := blockJSON(t, blocks)
+				for _, text := range []string{"Fruit", "Apple", "Banana", "Veggies"} {
+					if !strings.Contains(jsonStr, text) {
+						t.Errorf("expected %q in output: %s", text, jsonStr)
+					}
+				}
 				// Nested ordered list should be a sibling element in the
 				// RichTextBlock, not inside the parent list's Elements.
 				hasNested := false
@@ -796,7 +820,7 @@ func TestConvert_EdgeCases(t *testing.T) {
 					}
 				}
 				if !hasNested {
-					t.Errorf("expected nested ordered list as sibling element, got: %s", blockJSON(t, blocks))
+					t.Errorf("expected nested ordered list as sibling element, got: %s", jsonStr)
 				}
 			},
 		},
@@ -951,68 +975,179 @@ func TestConvert_EdgeCases(t *testing.T) {
 // Slack rejects rich_text_list nested inside rich_text_list elements — nested lists
 // must be sibling elements within the same rich_text block with incremented indent.
 func TestConvert_NestedListJSON(t *testing.T) {
-	input := "- Item one\n- Item two\n  - Nested A\n  - Nested B\n- Item three"
+	tests := []struct {
+		name        string
+		input       string
+		expectWords []string // individual words that must appear in JSON output
+	}{
+		{
+			name:        "multiple nested items",
+			input:       "- Item one\n- Item two\n  - Nested A\n  - Nested B\n- Item three",
+			expectWords: []string{"Item", "one", "two", "Nested", "three"},
+		},
+		{
+			name:        "single nested item",
+			input:       "- Item one\n- Item two\n  - Nested\n- Item three",
+			expectWords: []string{"Item", "one", "two", "Nested", "three"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocks, err := Convert(tt.input)
+			if err != nil {
+				t.Fatalf("Convert error: %v", err)
+			}
+
+			data, err := json.Marshal(blocks)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+			jsonStr := string(data)
+
+			// Verify no empty text elements.
+			if strings.Contains(jsonStr, `"text":""`) {
+				t.Errorf("JSON contains empty text element: %s", jsonStr)
+			}
+
+			// Verify all expected text content survived conversion.
+			for _, word := range tt.expectWords {
+				if !strings.Contains(jsonStr, word) {
+					t.Errorf("expected %q in JSON output: %s", word, blockJSON(t, blocks))
+				}
+			}
+
+			// Verify structure: single RichTextBlock with multiple list elements.
+			if len(blocks) != 1 {
+				t.Fatalf("expected 1 block, got %d", len(blocks))
+			}
+			rt := blocks[0].(*slack.RichTextBlock)
+
+			// Should have parent list (indent 0) and nested list (indent 1) as siblings.
+			if len(rt.Elements) < 2 {
+				t.Fatalf("expected at least 2 elements, got %d: %s", len(rt.Elements), blockJSON(t, blocks))
+			}
+
+			// All elements should be RichTextList — no nesting.
+			for i, elem := range rt.Elements {
+				list, ok := elem.(*slack.RichTextList)
+				if !ok {
+					t.Errorf("element[%d]: expected RichTextList, got %T", i, elem)
+					continue
+				}
+				if len(list.Elements) == 0 {
+					t.Errorf("element[%d]: RichTextList has zero items", i)
+				}
+				// Verify list items are only RichTextSection (no nested lists).
+				for j, item := range list.Elements {
+					if _, ok := item.(*slack.RichTextSection); !ok {
+						t.Errorf("element[%d].items[%d]: expected RichTextSection, got %T", i, j, item)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestConvert_DeeplyNestedList verifies 3+ levels of nesting produce correct
+// sibling elements with incrementing indent values.
+func TestConvert_DeeplyNestedList(t *testing.T) {
+	input := "- Level 0\n  - Level 1\n    - Level 2a\n    - Level 2b\n  - Level 1 again"
 	blocks, err := Convert(input)
 	if err != nil {
 		t.Fatalf("Convert error: %v", err)
 	}
-
-	data, err := json.Marshal(blocks)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-	jsonStr := string(data)
-
-	// Verify no empty text elements
-	if strings.Contains(jsonStr, `"text":""`) {
-		t.Errorf("JSON contains empty text element: %s", jsonStr)
-	}
-
-	// Verify structure: should have a single RichTextBlock with multiple list elements
 	if len(blocks) != 1 {
-		t.Fatalf("expected 1 block, got %d", len(blocks))
+		t.Fatalf("expected 1 block, got %d: %s", len(blocks), blockJSON(t, blocks))
 	}
-	rt := blocks[0].(*slack.RichTextBlock)
-
-	// Should have parent list (indent 0) and nested list (indent 1) as siblings
-	if len(rt.Elements) < 2 {
-		t.Fatalf("expected at least 2 elements, got %d: %s", len(rt.Elements), blockJSON(t, blocks))
+	rt, ok := blocks[0].(*slack.RichTextBlock)
+	if !ok {
+		t.Fatalf("expected RichTextBlock, got %T", blocks[0])
 	}
 
-	// All elements should be RichTextList — no nesting
+	// Verify all text content survived conversion.
+	// Goldmark splits text at spaces, so check individual words.
+	jsonStr := blockJSON(t, blocks)
+	for _, word := range []string{"Level", "2a", "2b", "again"} {
+		if !strings.Contains(jsonStr, word) {
+			t.Errorf("expected %q in output: %s", word, jsonStr)
+		}
+	}
+
+	// Should have 3 sibling RichTextList elements (indent 0, 1, 2).
+	if len(rt.Elements) < 3 {
+		t.Fatalf("expected at least 3 elements (indent 0, 1, 2), got %d: %s",
+			len(rt.Elements), jsonStr)
+	}
+
+	// All elements should be RichTextList with no nested lists inside.
+	indentsSeen := map[int]bool{}
 	for i, elem := range rt.Elements {
 		list, ok := elem.(*slack.RichTextList)
 		if !ok {
 			t.Errorf("element[%d]: expected RichTextList, got %T", i, elem)
 			continue
 		}
-		// Verify list items are only RichTextSection (no nested lists)
+		indentsSeen[list.Indent] = true
+		if len(list.Elements) == 0 {
+			t.Errorf("element[%d]: RichTextList at indent %d has zero items", i, list.Indent)
+		}
 		for j, item := range list.Elements {
 			if _, ok := item.(*slack.RichTextSection); !ok {
 				t.Errorf("element[%d].items[%d]: expected RichTextSection, got %T", i, j, item)
 			}
 		}
 	}
+
+	for _, indent := range []int{0, 1, 2} {
+		if !indentsSeen[indent] {
+			t.Errorf("expected a list at indent %d, got indents: %v", indent, indentsSeen)
+		}
+	}
 }
 
-// TestConvert_NoEmptyTextInListItems verifies that list items without text
-// (e.g., items that only contain nested lists) don't produce empty sections.
-func TestConvert_NoEmptyTextInListItems(t *testing.T) {
-	// This markdown creates a list item "Item two" that has a nested list
-	// but the item itself should still have its text.
-	input := "- Item one\n- Item two\n  - Nested\n- Item three"
+// TestConvert_MixedDeeplyNestedList verifies 3 levels with mixed ordered/unordered types.
+func TestConvert_MixedDeeplyNestedList(t *testing.T) {
+	// 5 spaces needed to nest under "1. " (3 chars) + 2 for the parent bullet indent.
+	input := "- Bullet\n  1. Ordered\n     - Nested bullet"
 	blocks, err := Convert(input)
 	if err != nil {
 		t.Fatalf("Convert error: %v", err)
 	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d: %s", len(blocks), blockJSON(t, blocks))
+	}
+	rt := blocks[0].(*slack.RichTextBlock)
 
-	data, err := json.Marshal(blocks)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
+	// Verify text content — goldmark splits at spaces, so check individual words.
+	jsonStr := blockJSON(t, blocks)
+	for _, word := range []string{"Bullet", "Ordered", "Nested"} {
+		if !strings.Contains(jsonStr, word) {
+			t.Errorf("expected %q in output: %s", word, jsonStr)
+		}
 	}
 
-	if strings.Contains(string(data), `"text":""`) {
-		t.Errorf("found empty text element in JSON output: %s", blockJSON(t, blocks))
+	// Verify we have lists at indent 0 (bullet), 1 (ordered), 2 (bullet).
+	type listInfo struct {
+		style  slack.RichTextListElementType
+		indent int
+	}
+	var lists []listInfo
+	for _, elem := range rt.Elements {
+		if list, ok := elem.(*slack.RichTextList); ok {
+			lists = append(lists, listInfo{style: list.Style, indent: list.Indent})
+		}
+	}
+	if len(lists) < 3 {
+		t.Fatalf("expected at least 3 list elements, got %d: %s", len(lists), jsonStr)
+	}
+	if lists[0].style != slack.RTEListBullet || lists[0].indent != 0 {
+		t.Errorf("expected bullet at indent 0, got %q at %d", lists[0].style, lists[0].indent)
+	}
+	if lists[1].style != slack.RTEListOrdered || lists[1].indent != 1 {
+		t.Errorf("expected ordered at indent 1, got %q at %d", lists[1].style, lists[1].indent)
+	}
+	if lists[2].style != slack.RTEListBullet || lists[2].indent != 2 {
+		t.Errorf("expected bullet at indent 2, got %q at %d", lists[2].style, lists[2].indent)
 	}
 }
 
