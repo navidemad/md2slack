@@ -80,11 +80,11 @@ func (ctx *renderContext) handleTableCell(_ *east.TableCell, entering bool) {
 			elements = append(elements, sec)
 		}
 		if len(elements) == 0 {
-			// Empty cell: provide a minimal RichTextSection so Slack API
-			// receives "elements": [...] rather than null.
+			// Empty cell: provide a minimal RichTextSection with a single space
+			// so Slack API receives non-empty text (it rejects "text":"").
 			elements = []slack.RichTextElement{
 				slack.NewRichTextSection(
-					slack.NewRichTextSectionTextElement("", nil),
+					slack.NewRichTextSectionTextElement(" ", nil),
 				),
 			}
 		}

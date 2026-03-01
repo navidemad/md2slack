@@ -665,10 +665,34 @@ func TestConvert_TableEmptyCell(t *testing.T) {
 			}
 		}
 	}
-	// Verify "data" is present in the non-empty cell.
+	// Empty cell (row 1, col 0) must contain a single-space text element,
+	// because Slack rejects zero-length "text":"".
+	emptyCell := tb.Rows[1][0] // first data row (row 0 is header), first column
+	if len(emptyCell.Elements) != 1 {
+		t.Fatalf("empty cell: expected 1 element, got %d", len(emptyCell.Elements))
+	}
+	sec, ok := emptyCell.Elements[0].(*slack.RichTextSection)
+	if !ok {
+		t.Fatalf("empty cell: expected *RichTextSection, got %T", emptyCell.Elements[0])
+	}
+	if len(sec.Elements) != 1 {
+		t.Fatalf("empty cell section: expected 1 sub-element, got %d", len(sec.Elements))
+	}
+	txtElem, ok := sec.Elements[0].(*slack.RichTextSectionTextElement)
+	if !ok {
+		t.Fatalf("empty cell: expected *RichTextSectionTextElement, got %T", sec.Elements[0])
+	}
+	if txtElem.Text != " " {
+		t.Errorf("empty cell text: expected %q, got %q", " ", txtElem.Text)
+	}
+
+	// Verify "data" is present and no zero-length text values exist.
 	jsonStr := blockJSON(t, blocks)
 	if !strings.Contains(jsonStr, "data") {
 		t.Errorf("expected 'data' in table JSON, got: %s", jsonStr)
+	}
+	if strings.Contains(jsonStr, `"text":""`) {
+		t.Errorf("JSON must not contain empty text values, got: %s", jsonStr)
 	}
 }
 
