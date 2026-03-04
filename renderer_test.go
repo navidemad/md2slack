@@ -1151,6 +1151,205 @@ func TestConvert_MixedDeeplyNestedList(t *testing.T) {
 	}
 }
 
+func TestConvert_EmojiShortcodes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		check func(t *testing.T, blocks []slack.Block)
+	}{
+		{
+			name:  "single emoji becomes emoji element",
+			input: ":bar_chart:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				if len(blocks) != 1 {
+					t.Fatalf("expected 1 block, got %d: %s", len(blocks), blockJSON(t, blocks))
+				}
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				if len(sec.Elements) != 1 {
+					t.Fatalf("expected 1 element, got %d: %s", len(sec.Elements), blockJSON(t, blocks))
+				}
+				emoji, ok := sec.Elements[0].(*slack.RichTextSectionEmojiElement)
+				if !ok {
+					t.Fatalf("expected RichTextSectionEmojiElement, got %T", sec.Elements[0])
+				}
+				if emoji.Name != "bar_chart" {
+					t.Errorf("expected emoji name %q, got %q", "bar_chart", emoji.Name)
+				}
+			},
+		},
+		{
+			name:  "emoji embedded in text",
+			input: "Hello :wave: world",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				// Should be: text("Hello ") + emoji("wave") + text(" world")
+				if len(sec.Elements) < 3 {
+					t.Fatalf("expected at least 3 elements, got %d: %s", len(sec.Elements), blockJSON(t, blocks))
+				}
+				// Find the emoji element.
+				foundEmoji := false
+				for _, elem := range sec.Elements {
+					if emoji, ok := elem.(*slack.RichTextSectionEmojiElement); ok {
+						if emoji.Name == "wave" {
+							foundEmoji = true
+						}
+					}
+				}
+				if !foundEmoji {
+					t.Errorf("expected emoji element with name 'wave': %s", blockJSON(t, blocks))
+				}
+			},
+		},
+		{
+			name:  "multiple emojis",
+			input: ":thumbsup: :heart: :fire:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				var emojiNames []string
+				for _, elem := range sec.Elements {
+					if emoji, ok := elem.(*slack.RichTextSectionEmojiElement); ok {
+						emojiNames = append(emojiNames, emoji.Name)
+					}
+				}
+				expected := []string{"thumbsup", "heart", "fire"}
+				if len(emojiNames) != len(expected) {
+					t.Fatalf("expected %d emojis, got %d: %v — %s", len(expected), len(emojiNames), emojiNames, blockJSON(t, blocks))
+				}
+				for i, name := range expected {
+					if emojiNames[i] != name {
+						t.Errorf("emoji[%d]: expected %q, got %q", i, name, emojiNames[i])
+					}
+				}
+			},
+		},
+		{
+			name:  "emoji with underscore in name",
+			input: ":speech_balloon:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				emoji, ok := sec.Elements[0].(*slack.RichTextSectionEmojiElement)
+				if !ok {
+					t.Fatalf("expected emoji element, got %T: %s", sec.Elements[0], blockJSON(t, blocks))
+				}
+				if emoji.Name != "speech_balloon" {
+					t.Errorf("expected %q, got %q", "speech_balloon", emoji.Name)
+				}
+			},
+		},
+		{
+			name:  "bold emoji inherits style",
+			input: "**:fire:**",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				foundStyledEmoji := false
+				for _, elem := range sec.Elements {
+					if emoji, ok := elem.(*slack.RichTextSectionEmojiElement); ok {
+						if emoji.Name == "fire" && emoji.Style != nil && emoji.Style.Bold {
+							foundStyledEmoji = true
+						}
+					}
+				}
+				if !foundStyledEmoji {
+					t.Errorf("expected bold emoji element: %s", blockJSON(t, blocks))
+				}
+			},
+		},
+		{
+			name:  "non-emoji colons preserved as text",
+			input: "time: 10:30 and key:value",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				// None of these should match as emoji — all should be text elements.
+				for _, elem := range sec.Elements {
+					if _, ok := elem.(*slack.RichTextSectionEmojiElement); ok {
+						t.Errorf("unexpected emoji element in non-emoji text: %s", blockJSON(t, blocks))
+					}
+				}
+			},
+		},
+		{
+			name:  "emoji with plus sign",
+			input: ":+1:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				emoji, ok := sec.Elements[0].(*slack.RichTextSectionEmojiElement)
+				if !ok {
+					t.Fatalf("expected emoji element, got %T", sec.Elements[0])
+				}
+				if emoji.Name != "+1" {
+					t.Errorf("expected %q, got %q", "+1", emoji.Name)
+				}
+			},
+		},
+		{
+			name:  "emoji in list item",
+			input: "- :check: Done\n- :x: Failed",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if !strings.Contains(jsonStr, `"type": "emoji"`) {
+					t.Errorf("expected emoji elements in list items: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"name": "check"`) {
+					t.Errorf("expected check emoji in output: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"name": "x"`) {
+					t.Errorf("expected x emoji in output: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "emoji in blockquote",
+			input: "> :warning: Caution",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if !strings.Contains(jsonStr, `"type": "emoji"`) {
+					t.Errorf("expected emoji element in blockquote: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"name": "warning"`) {
+					t.Errorf("expected warning emoji in output: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "emoji JSON serialization",
+			input: ":bar_chart: :pencil: :speech_balloon:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				data, err := json.Marshal(blocks)
+				if err != nil {
+					t.Fatalf("json.Marshal: %v", err)
+				}
+				jsonStr := string(data)
+				for _, name := range []string{"bar_chart", "pencil", "speech_balloon"} {
+					if !strings.Contains(jsonStr, `"name":"`+name+`"`) {
+						t.Errorf("expected emoji name %q in JSON: %s", name, jsonStr)
+					}
+				}
+				// Verify type is "emoji" not "text".
+				if !strings.Contains(jsonStr, `"type":"emoji"`) {
+					t.Errorf("expected emoji type in JSON: %s", jsonStr)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocks, err := Convert(tt.input)
+			if err != nil {
+				t.Fatalf("Convert error: %v", err)
+			}
+			tt.check(t, blocks)
+		})
+	}
+}
+
 // FuzzConvert verifies that Convert never panics on arbitrary input.
 func FuzzConvert(f *testing.F) {
 	f.Add("")
@@ -1164,6 +1363,7 @@ func FuzzConvert(f *testing.F) {
 	f.Add("- [x] done\n- [ ] todo")
 	f.Add("***bold italic***")
 	f.Add("~~strikethrough~~")
+	f.Add(":bar_chart: hello :wave: world :+1:")
 
 	f.Fuzz(func(t *testing.T, input string) {
 		_, err := Convert(input)
