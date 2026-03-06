@@ -217,25 +217,18 @@ func TestConvert_Basic(t *testing.T) {
 			},
 		},
 		{
-			name:  "table becomes section with code fence",
+			name:  "table becomes TableBlock",
 			input: "| Name | Age |\n|------|-----|\n| Alice | 30 |",
 			check: func(t *testing.T, blocks []slack.Block) {
 				if len(blocks) != 1 {
 					t.Fatalf("expected 1 block, got %d: %s", len(blocks), blockJSON(t, blocks))
 				}
-				sec, ok := blocks[0].(*slack.SectionBlock)
+				tb, ok := blocks[0].(*slack.TableBlock)
 				if !ok {
-					t.Fatalf("expected SectionBlock, got %T", blocks[0])
+					t.Fatalf("expected TableBlock, got %T", blocks[0])
 				}
-				if sec.Text == nil {
-					t.Fatal("expected text, got nil")
-				}
-				if sec.Text.Type != slack.MarkdownType {
-					t.Errorf("expected mrkdwn, got %q", sec.Text.Type)
-				}
-				// Should contain code fence.
-				if !strings.Contains(sec.Text.Text, "```") {
-					t.Errorf("expected code fence in table text, got: %q", sec.Text.Text)
+				if len(tb.Rows) != 2 {
+					t.Errorf("expected 2 rows (header + 1 data), got %d", len(tb.Rows))
 				}
 			},
 		},
@@ -515,19 +508,37 @@ func TestConvert_Table(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 block, got %d: %s", len(blocks), blockJSON(t, blocks))
 	}
-	sec, ok := blocks[0].(*slack.SectionBlock)
+	tb, ok := blocks[0].(*slack.TableBlock)
 	if !ok {
-		t.Fatalf("expected SectionBlock, got %T", blocks[0])
+		t.Fatalf("expected TableBlock, got %T", blocks[0])
 	}
-	text := sec.Text.Text
-	if !strings.Contains(text, "```") {
-		t.Errorf("expected code fence, got: %q", text)
+	// 2 rows: header + 1 data row.
+	if len(tb.Rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(tb.Rows))
 	}
-	if !strings.Contains(text, "Name") {
-		t.Errorf("expected 'Name' in table, got: %q", text)
+	// 2 columns.
+	if len(tb.Rows[0]) != 2 {
+		t.Fatalf("expected 2 columns, got %d", len(tb.Rows[0]))
 	}
-	if !strings.Contains(text, "Alice") {
-		t.Errorf("expected 'Alice' in table, got: %q", text)
+	// Verify content via JSON.
+	jsonStr := blockJSON(t, blocks)
+	if !strings.Contains(jsonStr, "Name") {
+		t.Errorf("expected 'Name' in table JSON, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, "Alice") {
+		t.Errorf("expected 'Alice' in table JSON, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, "Age") {
+		t.Errorf("expected 'Age' in table JSON, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, "30") {
+		t.Errorf("expected '30' in table JSON, got: %s", jsonStr)
+	}
+	// All columns should be wrapped.
+	for i, cs := range tb.ColumnSettings {
+		if !cs.IsWrapped {
+			t.Errorf("column %d: expected IsWrapped=true", i)
+		}
 	}
 }
 
@@ -540,11 +551,148 @@ func TestConvert_TableAlignment(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 block, got %d", len(blocks))
 	}
-	sec := blocks[0].(*slack.SectionBlock)
-	text := sec.Text.Text
-	// Right-aligned "100" should have leading spaces.
-	if !strings.Contains(text, "100") {
-		t.Errorf("expected '100' in table, got: %q", text)
+	tb := blocks[0].(*slack.TableBlock)
+	if len(tb.ColumnSettings) != 2 {
+		t.Fatalf("expected 2 column settings, got %d", len(tb.ColumnSettings))
+	}
+	// First column: left-aligned.
+	if tb.ColumnSettings[0].Align != slack.ColumnAlignmentLeft {
+		t.Errorf("column 0: expected left alignment, got %q", tb.ColumnSettings[0].Align)
+	}
+	// Second column: right-aligned.
+	if tb.ColumnSettings[1].Align != slack.ColumnAlignmentRight {
+		t.Errorf("column 1: expected right alignment, got %q", tb.ColumnSettings[1].Align)
+	}
+}
+
+func TestConvert_TableRichText(t *testing.T) {
+	// Bold and links in table cells should be preserved as rich text.
+	input := "| Feature | Link |\n|---------|------|\n| **bold** | [click](https://example.com) |"
+	blocks, err := Convert(input)
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d: %s", len(blocks), blockJSON(t, blocks))
+	}
+	tb, ok := blocks[0].(*slack.TableBlock)
+	if !ok {
+		t.Fatalf("expected TableBlock, got %T", blocks[0])
+	}
+	jsonStr := blockJSON(t, blocks)
+	// Bold style should be preserved in cells.
+	if !strings.Contains(jsonStr, `"bold": true`) {
+		t.Errorf("expected bold style preserved in table cell, got: %s", jsonStr)
+	}
+	// Link should be preserved in cells.
+	if !strings.Contains(jsonStr, "https://example.com") {
+		t.Errorf("expected link URL preserved in table cell, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"type": "link"`) {
+		t.Errorf("expected link element in table cell, got: %s", jsonStr)
+	}
+	// Verify we have 2 rows (header + 1 data).
+	if len(tb.Rows) != 2 {
+		t.Errorf("expected 2 rows, got %d", len(tb.Rows))
+	}
+}
+
+func TestConvert_TableCenterAlignment(t *testing.T) {
+	input := "| Left | Center | Right |\n|:-----|:------:|------:|\n| a | b | c |"
+	blocks, err := Convert(input)
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tb := blocks[0].(*slack.TableBlock)
+	if len(tb.ColumnSettings) != 3 {
+		t.Fatalf("expected 3 column settings, got %d", len(tb.ColumnSettings))
+	}
+	if tb.ColumnSettings[0].Align != slack.ColumnAlignmentLeft {
+		t.Errorf("column 0: expected left, got %q", tb.ColumnSettings[0].Align)
+	}
+	if tb.ColumnSettings[1].Align != slack.ColumnAlignmentCenter {
+		t.Errorf("column 1: expected center, got %q", tb.ColumnSettings[1].Align)
+	}
+	if tb.ColumnSettings[2].Align != slack.ColumnAlignmentRight {
+		t.Errorf("column 2: expected right, got %q", tb.ColumnSettings[2].Align)
+	}
+	// All columns should have wrapping enabled.
+	for i, cs := range tb.ColumnSettings {
+		if !cs.IsWrapped {
+			t.Errorf("column %d: expected IsWrapped=true", i)
+		}
+	}
+}
+
+func TestConvert_TableSingleColumn(t *testing.T) {
+	input := "| Item |\n|------|\n| one |\n| two |"
+	blocks, err := Convert(input)
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tb := blocks[0].(*slack.TableBlock)
+	// 3 rows: header + 2 data.
+	if len(tb.Rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(tb.Rows))
+	}
+	// 1 column.
+	if len(tb.ColumnSettings) != 1 {
+		t.Fatalf("expected 1 column setting, got %d", len(tb.ColumnSettings))
+	}
+}
+
+func TestConvert_TableEmptyCell(t *testing.T) {
+	input := "| A | B |\n|---|---|\n|  | data |"
+	blocks, err := Convert(input)
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tb := blocks[0].(*slack.TableBlock)
+	// No cell should have nil Elements.
+	for i, row := range tb.Rows {
+		for j, cell := range row {
+			if cell.Elements == nil {
+				t.Errorf("row %d col %d: Elements should not be nil", i, j)
+			}
+		}
+	}
+	// Empty cell (row 1, col 0) must contain a single-space text element,
+	// because Slack rejects zero-length "text":"".
+	emptyCell := tb.Rows[1][0] // first data row (row 0 is header), first column
+	if len(emptyCell.Elements) != 1 {
+		t.Fatalf("empty cell: expected 1 element, got %d", len(emptyCell.Elements))
+	}
+	sec, ok := emptyCell.Elements[0].(*slack.RichTextSection)
+	if !ok {
+		t.Fatalf("empty cell: expected *RichTextSection, got %T", emptyCell.Elements[0])
+	}
+	if len(sec.Elements) != 1 {
+		t.Fatalf("empty cell section: expected 1 sub-element, got %d", len(sec.Elements))
+	}
+	txtElem, ok := sec.Elements[0].(*slack.RichTextSectionTextElement)
+	if !ok {
+		t.Fatalf("empty cell: expected *RichTextSectionTextElement, got %T", sec.Elements[0])
+	}
+	if txtElem.Text != " " {
+		t.Errorf("empty cell text: expected %q, got %q", " ", txtElem.Text)
+	}
+
+	// Verify "data" is present and no zero-length text values exist.
+	jsonStr := blockJSON(t, blocks)
+	if !strings.Contains(jsonStr, "data") {
+		t.Errorf("expected 'data' in table JSON, got: %s", jsonStr)
+	}
+	if strings.Contains(jsonStr, `"text":""`) {
+		t.Errorf("JSON must not contain empty text values, got: %s", jsonStr)
 	}
 }
 
@@ -574,6 +722,88 @@ func TestChunkBlocks(t *testing.T) {
 				t.Errorf("expected %d chunks, got %d", tt.want, len(chunks))
 			}
 		})
+	}
+}
+
+func TestChunkBlocks_TableSplit(t *testing.T) {
+	blocks := []slack.Block{
+		slack.NewDividerBlock(),
+		&slack.TableBlock{},
+		slack.NewDividerBlock(),
+		&slack.TableBlock{},
+		slack.NewDividerBlock(),
+	}
+	chunks := ChunkBlocks(blocks, 50)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	// First chunk: divider, table, divider
+	if len(chunks[0]) != 3 {
+		t.Errorf("chunk 0: expected 3 blocks, got %d", len(chunks[0]))
+	}
+	// Second chunk: table, divider
+	if len(chunks[1]) != 2 {
+		t.Errorf("chunk 1: expected 2 blocks, got %d", len(chunks[1]))
+	}
+}
+
+func TestChunkBlocks_SingleTable(t *testing.T) {
+	blocks := []slack.Block{
+		slack.NewDividerBlock(),
+		&slack.TableBlock{},
+		slack.NewDividerBlock(),
+	}
+	chunks := ChunkBlocks(blocks, 50)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	if len(chunks[0]) != 3 {
+		t.Errorf("expected 3 blocks, got %d", len(chunks[0]))
+	}
+}
+
+func TestChunkBlocks_ThreeTables(t *testing.T) {
+	blocks := []slack.Block{
+		&slack.TableBlock{},
+		slack.NewDividerBlock(),
+		&slack.TableBlock{},
+		&slack.TableBlock{},
+	}
+	chunks := ChunkBlocks(blocks, 50)
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %d", len(chunks))
+	}
+	if len(chunks[0]) != 2 {
+		t.Errorf("chunk 0: expected 2 blocks, got %d", len(chunks[0]))
+	}
+	if len(chunks[1]) != 1 {
+		t.Errorf("chunk 1: expected 1 block, got %d", len(chunks[1]))
+	}
+	if len(chunks[2]) != 1 {
+		t.Errorf("chunk 2: expected 1 block, got %d", len(chunks[2]))
+	}
+}
+
+func TestChunkBlocks_TableAtMaxBoundary(t *testing.T) {
+	// 3 blocks then a table at position 4, with max=4.
+	// The first 4 blocks fit in one chunk (including the table).
+	// The 5th block (second table) forces a new chunk.
+	blocks := []slack.Block{
+		slack.NewDividerBlock(),
+		slack.NewDividerBlock(),
+		slack.NewDividerBlock(),
+		&slack.TableBlock{},
+		&slack.TableBlock{},
+	}
+	chunks := ChunkBlocks(blocks, 4)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	if len(chunks[0]) != 4 {
+		t.Errorf("chunk 0: expected 4 blocks, got %d", len(chunks[0]))
+	}
+	if len(chunks[1]) != 1 {
+		t.Errorf("chunk 1: expected 1 block, got %d", len(chunks[1]))
 	}
 }
 
@@ -1148,6 +1378,118 @@ func TestConvert_MixedDeeplyNestedList(t *testing.T) {
 	}
 	if lists[2].style != slack.RTEListBullet || lists[2].indent != 2 {
 		t.Errorf("expected bullet at indent 2, got %q at %d", lists[2].style, lists[2].indent)
+	}
+}
+
+// TestConvert_MultipleTables verifies two tables in one document produce
+// independent TableBlocks with unique block IDs and correct content.
+func TestConvert_MultipleTables(t *testing.T) {
+	input := "| A | B |\n|---|---|\n| 1 | 2 |\n\n| X | Y |\n|---|---|\n| 3 | 4 |"
+	blocks, err := Convert(input)
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d: %s", len(blocks), blockJSON(t, blocks))
+	}
+
+	tb1, ok := blocks[0].(*slack.TableBlock)
+	if !ok {
+		t.Fatalf("expected TableBlock[0], got %T", blocks[0])
+	}
+	tb2, ok := blocks[1].(*slack.TableBlock)
+	if !ok {
+		t.Fatalf("expected TableBlock[1], got %T", blocks[1])
+	}
+
+	// Unique block IDs.
+	if tb1.BlockID == tb2.BlockID {
+		t.Errorf("expected unique block IDs, both are %q", tb1.BlockID)
+	}
+
+	// Verify content independence via JSON.
+	jsonStr := blockJSON(t, blocks)
+	for _, word := range []string{"A", "B", "X", "Y"} {
+		if !strings.Contains(jsonStr, word) {
+			t.Errorf("expected %q in output: %s", word, jsonStr)
+		}
+	}
+}
+
+// TestConvert_TableMixedWithBlocks verifies a table surrounded by other block types
+// produces the correct block sequence and that post-table inline formatting works.
+func TestConvert_TableMixedWithBlocks(t *testing.T) {
+	input := "## Title\n\nSome text.\n\n| H1 | H2 |\n|---|---|\n| a | b |\n\nAfter table **bold**."
+	blocks, err := Convert(input)
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 4 {
+		t.Fatalf("expected 4 blocks (header, paragraph, table, paragraph), got %d: %s",
+			len(blocks), blockJSON(t, blocks))
+	}
+
+	// Block 0: header.
+	if _, ok := blocks[0].(*slack.HeaderBlock); !ok {
+		t.Errorf("block[0]: expected HeaderBlock, got %T", blocks[0])
+	}
+	// Block 1: rich text paragraph.
+	if _, ok := blocks[1].(*slack.RichTextBlock); !ok {
+		t.Errorf("block[1]: expected RichTextBlock, got %T", blocks[1])
+	}
+	// Block 2: table.
+	if _, ok := blocks[2].(*slack.TableBlock); !ok {
+		t.Errorf("block[2]: expected TableBlock, got %T", blocks[2])
+	}
+	// Block 3: rich text paragraph with bold.
+	rt, ok := blocks[3].(*slack.RichTextBlock)
+	if !ok {
+		t.Fatalf("block[3]: expected RichTextBlock, got %T", blocks[3])
+	}
+	sec, ok := rt.Elements[0].(*slack.RichTextSection)
+	if !ok {
+		t.Fatalf("block[3]: expected RichTextSection, got %T", rt.Elements[0])
+	}
+	foundBold := false
+	for _, elem := range sec.Elements {
+		if te, ok := elem.(*slack.RichTextSectionTextElement); ok {
+			if te.Style != nil && te.Style.Bold {
+				foundBold = true
+			}
+		}
+	}
+	if !foundBold {
+		t.Errorf("expected bold text in post-table paragraph, got: %s", blockJSON(t, blocks))
+	}
+}
+
+// TestConvert_TableCodeInCell verifies that inline code in a table cell
+// preserves the code style flag.
+func TestConvert_TableCodeInCell(t *testing.T) {
+	input := "| Header |\n|---|\n| `code` |"
+	blocks, err := Convert(input)
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d: %s", len(blocks), blockJSON(t, blocks))
+	}
+	tb, ok := blocks[0].(*slack.TableBlock)
+	if !ok {
+		t.Fatalf("expected TableBlock, got %T", blocks[0])
+	}
+
+	// Verify "code": true appears in the JSON output.
+	data, err := json.Marshal(tb)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	jsonStr := string(data)
+	if !strings.Contains(jsonStr, `"code":true`) {
+		t.Errorf("expected code style in table cell, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, "code") {
+		t.Errorf("expected 'code' text in table cell, got: %s", jsonStr)
 	}
 }
 

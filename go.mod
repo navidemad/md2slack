@@ -1,9 +1,9 @@
 module github.com/navidemad/md2slack
 
-go 1.22
+go 1.25
 
 require (
-	github.com/slack-go/slack v0.17.3
+	github.com/slack-go/slack v0.18.0
 	github.com/yuin/goldmark v1.7.16
 )
 

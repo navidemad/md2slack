@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-md2slack is a Go library that converts standard Markdown into Slack Block Kit blocks using goldmark (GFM parser) and slack-go/slack (canonical Block Kit types). One public function: `Convert` returns `[]slack.Block`. A helper `ChunkBlocks` splits block slices for the 50-block-per-message limit. Requires Go 1.22+.
+md2slack is a Go library that converts standard Markdown into Slack Block Kit blocks using goldmark (GFM parser) and slack-go/slack (canonical Block Kit types). One public function: `Convert` returns `[]slack.Block`. A helper `ChunkBlocks` splits block slices for the 50-block-per-message limit and ensures at most one `TableBlock` per chunk (Slack rejects messages with multiple tables). Requires Go 1.25+.
 
 ## Commands
 
@@ -22,7 +22,7 @@ Single flat package `md2slack` with a custom goldmark AST walker that builds `[]
 - `context.go` — `renderContext` struct that tracks all rendering state: output `blocks` accumulator, `inlineElements` for current inline content, `styleStack` for nested bold/italic/strike/code, heading state (`headingBuf`/`headingMrkdwnBuf` builders for plain text and mrkdwn fallback), `blockquoteStack` for nested blockquotes, `listStack` for nested lists, table/link/image state, `actionCounter` for unique IDs. Contains style stack methods (`pushStyle`, `popStyle`, `recomputeStyle`), inline helpers (`addText`, `addLink`, `flushInlineToSection`), and block emission (`emitBlock`).
 - `blocks.go` — Block-level AST node handlers: `handleDocument`, `handleHeading` (smart HeaderBlock vs SectionBlock fallback for links or >150 chars), `handleParagraph` (standalone image → ImageBlock, standalone link → ActionBlock, normal → RichTextBlock), `handleBlockquote` (RichTextQuote), `handleFencedCodeBlock`/`handleCodeBlock` (RichTextPreformatted), `handleList`/`handleListItem` (RichTextList with nested indent), `handleThematicBreak` (DividerBlock).
 - `inlines.go` — Inline AST node handlers: `handleText` (text with style stack), `handleString`, `handleEmphasis` (level 1=italic, 2=bold), `handleCodeSpan` (Code style), `handleLink` (RichTextSectionLinkElement), `handleImage`, `handleAutoLink`, `handleStrikethrough` (Strike style), `handleTaskCheckBox` (checkbox emoji).
-- `table.go` — GFM table handlers: `handleTable`, `handleTableHeader`, `handleTableRow`, `handleTableCell`. Accumulates cell text in `tableState`, renders as code-fenced monospace SectionBlock with column alignment (`padCellAligned`). No native Slack TableBlock exists in slack-go.
+- `table.go` — GFM table handlers: `handleTable`, `handleTableHeader`, `handleTableRow`, `handleTableCell`. Accumulates cells as `*slack.RichTextBlock` in `tableState`, renders as native `slack.TableBlock` with per-column alignment and wrapping. Inline formatting (bold, links, code) is preserved in cells via the standard inline pipeline.
 - `doc.go` — Package-level godoc.
 - `cmd/example/main.go` — Example CLI that reads markdown from stdin/file, calls Convert and ChunkBlocks, prints JSON.
 

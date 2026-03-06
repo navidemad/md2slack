@@ -1,8 +1,7 @@
 package md2slack
 
 import (
-	"strings"
-	"unicode/utf8"
+	"fmt"
 
 	"github.com/slack-go/slack"
 	east "github.com/yuin/goldmark/extension/ast"
@@ -11,10 +10,9 @@ import (
 // tableState accumulates table data during AST walking.
 type tableState struct {
 	alignments []east.Alignment
-	headerRow  []string
-	dataRows   [][]string
-	currentRow []string
-	cellBuf    strings.Builder
+	headerRow  []*slack.RichTextBlock
+	dataRows   [][]*slack.RichTextBlock
+	currentRow []*slack.RichTextBlock
 	inHeader   bool
 }
 
@@ -31,11 +29,7 @@ func (ctx *renderContext) handleTable(n *east.Table, entering bool) {
 			return
 		}
 
-		text := ctx.tableState.render()
-		ctx.emitBlock(slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
-			nil, nil,
-		))
+		ctx.emitBlock(ctx.tableState.renderTableBlock(ctx))
 		ctx.tableState = nil
 	}
 }
@@ -74,116 +68,76 @@ func (ctx *renderContext) handleTableCell(_ *east.TableCell, entering bool) {
 		return
 	}
 	if entering {
-		ctx.tableState.cellBuf.Reset()
+		// Clear inline accumulator and style stack so cell content starts fresh.
+		ctx.inlineElements = nil
+		ctx.styleStack = nil
+		ctx.currentStyle = nil
 	} else {
-		ctx.tableState.currentRow = append(ctx.tableState.currentRow, ctx.tableState.cellBuf.String())
-		ctx.tableState.cellBuf.Reset()
+		// Flush accumulated inline elements into a RichTextBlock cell.
+		var elements []slack.RichTextElement
+		sec := ctx.flushInlineToSection()
+		if sec != nil {
+			elements = append(elements, sec)
+		}
+		if len(elements) == 0 {
+			// Empty cell: provide a minimal RichTextSection with a single space
+			// so Slack API receives non-empty text (it rejects "text":"").
+			elements = []slack.RichTextElement{
+				slack.NewRichTextSection(
+					slack.NewRichTextSectionTextElement(" ", nil),
+				),
+			}
+		}
+		cell := slack.NewRichTextBlock("", elements...)
+		ctx.tableState.currentRow = append(ctx.tableState.currentRow, cell)
 	}
 }
 
-// render builds a code-fenced monospace table from the accumulated data.
-func (ts *tableState) render() string {
-	// Collect all rows: header + data.
-	var allRows [][]string
-	if len(ts.headerRow) > 0 {
-		allRows = append(allRows, ts.headerRow)
-	}
-	allRows = append(allRows, ts.dataRows...)
+// renderTableBlock builds a *slack.TableBlock from the accumulated table data.
+func (ts *tableState) renderTableBlock(ctx *renderContext) *slack.TableBlock {
+	ctx.actionCounter++
+	blockID := fmt.Sprintf("table-%d", ctx.actionCounter)
+	tb := slack.NewTableBlock(blockID)
 
-	if len(allRows) == 0 {
-		return "```\n```"
+	// Add header row.
+	if len(ts.headerRow) > 0 {
+		tb.AddRow(ts.headerRow...)
+	}
+
+	// Add data rows.
+	for _, row := range ts.dataRows {
+		tb.AddRow(row...)
 	}
 
 	// Determine column count.
 	numCols := 0
-	for _, row := range allRows {
+	if len(ts.headerRow) > numCols {
+		numCols = len(ts.headerRow)
+	}
+	for _, row := range ts.dataRows {
 		if len(row) > numCols {
 			numCols = len(row)
 		}
 	}
-	if numCols == 0 {
-		return "```\n```"
-	}
 
-	// Normalize row lengths.
-	for i := range allRows {
-		for len(allRows[i]) < numCols {
-			allRows[i] = append(allRows[i], "")
-		}
-	}
-
-	// Compute column widths.
-	widths := make([]int, numCols)
-	for _, row := range allRows {
-		for j, cell := range row {
-			w := utf8.RuneCountInString(cell)
-			if w > widths[j] {
-				widths[j] = w
+	// Build column settings with alignment and wrapping.
+	settings := make([]slack.ColumnSetting, numCols)
+	for i := range settings {
+		settings[i].IsWrapped = true
+		if i < len(ts.alignments) {
+			switch ts.alignments[i] {
+			case east.AlignRight:
+				settings[i].Align = slack.ColumnAlignmentRight
+			case east.AlignCenter:
+				settings[i].Align = slack.ColumnAlignmentCenter
+			default:
+				settings[i].Align = slack.ColumnAlignmentLeft
 			}
+		} else {
+			settings[i].Align = slack.ColumnAlignmentLeft
 		}
 	}
-	// Ensure minimum width of 3 for separator dashes.
-	for j := range widths {
-		if widths[j] < 3 {
-			widths[j] = 3
-		}
-	}
+	tb.WithColumnSettings(settings...)
 
-	// Extract alignments.
-	aligns := make([]east.Alignment, numCols)
-	for i := 0; i < numCols && i < len(ts.alignments); i++ {
-		aligns[i] = ts.alignments[i]
-	}
-
-	// Build output.
-	var out strings.Builder
-	out.WriteString("```\n")
-
-	for i, row := range allRows {
-		var line strings.Builder
-		for j, cell := range row {
-			if j > 0 {
-				line.WriteString(" | ")
-			}
-			line.WriteString(padCellAligned(cell, widths[j], aligns[j]))
-		}
-		out.WriteString(strings.TrimRight(line.String(), " "))
-		out.WriteByte('\n')
-
-		// Insert separator after header row.
-		if i == 0 && len(ts.headerRow) > 0 {
-			var sep strings.Builder
-			for j := 0; j < numCols; j++ {
-				if j > 0 {
-					sep.WriteString(" | ")
-				}
-				sep.WriteString(strings.Repeat("-", widths[j]))
-			}
-			out.WriteString(strings.TrimRight(sep.String(), " "))
-			out.WriteByte('\n')
-		}
-	}
-
-	result := strings.TrimRight(out.String(), "\n")
-	result += "\n```"
-	return result
-}
-
-// padCellAligned pads a cell to the given width using the alignment.
-func padCellAligned(cell string, width int, align east.Alignment) string {
-	n := utf8.RuneCountInString(cell)
-	if n >= width {
-		return cell
-	}
-	gap := width - n
-	switch align {
-	case east.AlignRight:
-		return strings.Repeat(" ", gap) + cell
-	case east.AlignCenter:
-		left := gap / 2
-		right := gap - left
-		return strings.Repeat(" ", left) + cell + strings.Repeat(" ", right)
-	default: // AlignLeft, AlignNone
-		return cell + strings.Repeat(" ", gap)
-	}
+	return tb
 }

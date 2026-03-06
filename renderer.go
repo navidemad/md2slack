@@ -45,7 +45,7 @@ func getParser() goldmark.Markdown {
 //   - Ordered lists (1. item) → RichTextBlock with RichTextList (ordered)
 //   - Unordered lists (- item) → RichTextBlock with RichTextList (bullet)
 //   - Nested lists → RichTextList with indent levels
-//   - Tables (GFM) → SectionBlock with code-fenced monospace
+//   - Tables (GFM) → TableBlock with rich text cells
 //   - Horizontal rules (---) → DividerBlock
 //   - Standalone links ([text](url) alone) → ActionBlock with button
 //   - Task checkboxes (- [x] item) → checkbox emoji text
@@ -144,8 +144,10 @@ func Convert(markdown string) ([]slack.Block, error) {
 	return ctx.blocks, nil
 }
 
-// ChunkBlocks splits a slice of blocks into chunks of at most maxPerMessage.
-// This is useful for respecting Slack's 50-block-per-message limit.
+// ChunkBlocks splits a slice of blocks into chunks of at most maxPerMessage,
+// while also ensuring each chunk contains at most one [slack.TableBlock].
+// Slack rejects messages with more than one table (error: only_one_table_allowed),
+// so this function forces a new chunk before every additional TableBlock.
 // If maxPerMessage is <= 0, it defaults to 50.
 func ChunkBlocks(blocks []slack.Block, maxPerMessage int) [][]slack.Block {
 	if maxPerMessage <= 0 {
@@ -154,18 +156,30 @@ func ChunkBlocks(blocks []slack.Block, maxPerMessage int) [][]slack.Block {
 	if len(blocks) == 0 {
 		return nil
 	}
-	if len(blocks) <= maxPerMessage {
-		return [][]slack.Block{blocks}
-	}
 
 	var chunks [][]slack.Block
-	for len(blocks) > 0 {
-		end := maxPerMessage
-		if end > len(blocks) {
-			end = len(blocks)
+	var chunk []slack.Block
+	hasTable := false
+
+	for _, b := range blocks {
+		_, isTable := b.(*slack.TableBlock)
+		if isTable && hasTable {
+			// Flush current chunk before starting a new one with this table.
+			chunks = append(chunks, chunk)
+			chunk = nil
+			hasTable = false
+		} else if len(chunk) >= maxPerMessage {
+			chunks = append(chunks, chunk)
+			chunk = nil
+			hasTable = false
 		}
-		chunks = append(chunks, blocks[:end])
-		blocks = blocks[end:]
+		chunk = append(chunk, b)
+		if isTable {
+			hasTable = true
+		}
+	}
+	if len(chunk) > 0 {
+		chunks = append(chunks, chunk)
 	}
 	return chunks
 }

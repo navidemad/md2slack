@@ -18,7 +18,7 @@
 go get github.com/navidemad/md2slack
 ```
 
-Requires **Go 1.22+**.
+Requires **Go 1.25+**.
 
 ## Quick start
 
@@ -72,7 +72,7 @@ Output blocks (as JSON):
 | `> quote` | `rich_text` (`rich_text_quote`) |
 | Fenced code blocks (`` ``` ``) | `rich_text` (`rich_text_preformatted`) |
 | `1. item` / `- item` | `rich_text` (`rich_text_list` with ordered/bullet style, nested indent) |
-| GFM tables | `section` (mrkdwn with code-fenced monospace, column-aligned) |
+| GFM tables | `table` (native TableBlock with rich text cells, per-column alignment and wrapping) |
 | Inline text with formatting | `rich_text` (`rich_text_section` with styled elements) |
 
 ### Inline formatting
@@ -165,7 +165,7 @@ blocks, _ := md2slack.Convert("[Click here](https://example.com)")
 
 ### Message chunking
 
-Slack limits messages to 50 blocks. Use `ChunkBlocks` to split:
+Slack limits messages to 50 blocks. Use `ChunkBlocks` to split. It also enforces at most one `TableBlock` per chunk, since Slack rejects messages containing multiple tables.
 
 ```go
 blocks, _ := md2slack.Convert(longMarkdown)
@@ -183,7 +183,7 @@ Parses a Markdown string and returns Slack Block Kit blocks. Returns `nil, nil` 
 
 ### `ChunkBlocks(blocks []slack.Block, maxPerMessage int) [][]slack.Block`
 
-Splits a block slice into chunks of at most `maxPerMessage`. Defaults to 50 if `maxPerMessage <= 0`.
+Splits a block slice into chunks of at most `maxPerMessage`. Defaults to 50 if `maxPerMessage <= 0`. Each chunk contains at most one `TableBlock` — when a table is encountered, the current chunk is finalized and a new chunk begins after the table.
 
 ## CLI example
 

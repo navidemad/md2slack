@@ -151,6 +151,9 @@ func (ctx *renderContext) flushInlineToSection() *slack.RichTextSection {
 
 // emitBlock appends a block to the output.
 func (ctx *renderContext) emitBlock(b slack.Block) {
+	if b == nil {
+		return
+	}
 	ctx.blocks = append(ctx.blocks, b)
 }
 

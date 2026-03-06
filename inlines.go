@@ -30,12 +30,6 @@ func (ctx *renderContext) handleText(n *ast.Text, entering bool) {
 		return
 	}
 
-	// Inside a table cell, write to the cell buffer (plain text, no formatting).
-	if ctx.inTable && ctx.tableState != nil {
-		ctx.tableState.cellBuf.WriteString(text)
-		return
-	}
-
 	// Inside a link, accumulate text for the link display text.
 	if ctx.inLink {
 		ctx.linkTextBuf += text
@@ -65,10 +59,6 @@ func (ctx *renderContext) handleString(n *ast.String, entering bool) {
 		} else {
 			ctx.headingMrkdwnBuf.WriteString(strings.ReplaceAll(text, "*", `\*`))
 		}
-		return
-	}
-	if ctx.inTable && ctx.tableState != nil {
-		ctx.tableState.cellBuf.WriteString(text)
 		return
 	}
 	if ctx.inLink {
@@ -122,11 +112,6 @@ func (ctx *renderContext) handleCodeSpan(n *ast.CodeSpan, entering bool) {
 		return
 	}
 
-	if ctx.inTable && ctx.tableState != nil {
-		ctx.tableState.cellBuf.WriteString(text)
-		return
-	}
-
 	if ctx.inLink {
 		ctx.linkTextBuf += text
 		return
@@ -161,8 +146,6 @@ func (ctx *renderContext) handleLink(n *ast.Link, entering bool) {
 			ctx.headingMrkdwnBuf.WriteString("|")
 			ctx.headingMrkdwnBuf.WriteString(ctx.linkTextBuf)
 			ctx.headingMrkdwnBuf.WriteString(">")
-		case ctx.inTable && ctx.tableState != nil:
-			// Link text already written to cellBuf via handleText.
 		default:
 			ctx.addLink(ctx.linkURL, ctx.linkTextBuf)
 		}
@@ -192,12 +175,8 @@ func (ctx *renderContext) handleImage(n *ast.Image, entering bool) {
 			ctx.headingMrkdwnBuf.WriteString(ctx.imageAlt)
 		}
 
-		// In tables, write alt text to cell buffer.
-		if ctx.inTable && ctx.tableState != nil {
-			ctx.tableState.cellBuf.WriteString(alt)
-		}
-		// Inline image (not standalone, not heading, not table): fall back to link.
-		if !ctx.inHeading && (!ctx.inTable || ctx.tableState == nil) && !ctx.isStandaloneImage {
+		// Inline image (not standalone, not heading): fall back to link.
+		if !ctx.inHeading && !ctx.isStandaloneImage {
 			label := ctx.imageAlt
 			if label == "" {
 				label = ctx.imageURL

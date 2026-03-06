@@ -6,7 +6,7 @@ This guide walks you through using the `cmd/demo/` program to convert Markdown t
 
 | What | How to get it |
 |------|---------------|
-| **Go 1.22+** | Install from <https://go.dev/dl/> — run `go version` to verify |
+| **Go 1.25+** | Install from <https://go.dev/dl/> — run `go version` to verify |
 | **Slack Bot Token** | Create an app at <https://api.slack.com/apps>, add the `chat:write` bot scope, install to your workspace, copy the `xoxb-…` token |
 | **Channel ID** | In Slack, right-click a channel → *View channel details* → copy the ID at the bottom (e.g. `C0123456789`). Invite the bot to the channel |
 | **Claude Code** *(optional)* | Install from <https://docs.claude.com/en/docs/setup> — only needed for the Claude-generated example |
