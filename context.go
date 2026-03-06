@@ -7,14 +7,14 @@ import (
 	"github.com/slack-go/slack"
 )
 
-// emojiShortcodeRe matches Slack emoji shortcodes like :bar_chart:, :+1:, :wave:.
-// Slack emoji names contain lowercase letters, digits, underscores, hyphens, and plus signs.
-// The name must contain at least one letter to avoid matching clock-like patterns
-// (e.g. ":49:" in "19:49:41") which Slack rejects as invalid emoji.
+// emojiShortcodeRe matches potential Slack emoji shortcodes like :bar_chart:, :+1:, :wave:.
+// Slack emoji names start with a letter, digit, or plus sign, followed by letters, digits,
+// underscores, hyphens, or plus signs. This regex intentionally over-matches (e.g. pure-digit
+// names like :49:); the companion function isValidEmojiName filters out false positives.
 var emojiShortcodeRe = regexp.MustCompile(`:([a-z0-9+][a-z0-9_+\-]*):`)
 
-// isValidEmojiName returns true if the name contains at least one letter.
-// Pure-digit names like "49" from time strings (19:49:41) are not valid emojis.
+// isValidEmojiName returns true if the name contains at least one ASCII letter (a-z) or
+// a plus sign. Pure-digit names like "49" from time strings (19:49:41) are not valid emojis.
 func isValidEmojiName(name string) bool {
 	for _, c := range name {
 		if (c >= 'a' && c <= 'z') || c == '+' {
@@ -200,7 +200,9 @@ func resolveEmojis(elements []slack.RichTextSectionElement) []slack.RichTextSect
 	var result []slack.RichTextSectionElement
 	for _, elem := range merged {
 		te, ok := elem.(*slack.RichTextSectionTextElement)
-		if !ok {
+		if !ok || (te.Style != nil && te.Style.Code) {
+			// Non-text elements and code-styled text are passed through as-is.
+			// Inline code (backticks) should render :fire: literally, not as an emoji.
 			result = append(result, elem)
 			continue
 		}

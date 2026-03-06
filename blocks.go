@@ -158,12 +158,10 @@ func (ctx *renderContext) handleParagraph(n *ast.Paragraph, entering bool) {
 			return
 		}
 
-		// Normal paragraph → section block with mrkdwn.
+		// Normal paragraph → rich text block.
 		if len(ctx.inlineElements) > 0 {
-			resolved := resolveEmojis(ctx.inlineElements)
-			sec := slack.NewRichTextSection(resolved...)
+			sec := ctx.flushInlineToSection()
 			ctx.emitBlock(slack.NewRichTextBlock("", sec))
-			ctx.inlineElements = nil
 		}
 	}
 }

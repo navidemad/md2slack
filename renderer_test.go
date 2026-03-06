@@ -1707,6 +1707,48 @@ func TestConvert_EmojiShortcodes(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:  "emoji in inline code preserved as literal text",
+			input: "Use `:fire:` for emphasis",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				// :fire: inside backticks should NOT become an emoji element.
+				if strings.Contains(jsonStr, `"type": "emoji"`) {
+					t.Errorf("emoji inside inline code should remain as text: %s", jsonStr)
+				}
+				// The literal text should be preserved.
+				if !strings.Contains(jsonStr, `:fire:`) {
+					t.Errorf("expected literal :fire: in code span: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "adjacent invalid and valid shortcodes",
+			input: "19:49::wave: hello",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				// :49: is invalid (pure digit), :wave: is valid.
+				if strings.Contains(jsonStr, `"name": "49"`) {
+					t.Errorf(":49: should not be emoji: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"name": "wave"`) {
+					t.Errorf("expected :wave: emoji: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "emoji in table cell",
+			input: "| Status |\n|---|\n| :check: Done |",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if !strings.Contains(jsonStr, `"type": "emoji"`) {
+					t.Errorf("expected emoji element in table cell: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"name": "check"`) {
+					t.Errorf("expected check emoji in table cell: %s", jsonStr)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1789,6 +1831,34 @@ func TestConvert_TableExactlyAtLimit(t *testing.T) {
 	tb := blocks[0].(*slack.TableBlock)
 	if len(tb.Rows) != 100 {
 		t.Errorf("expected 100 rows, got %d", len(tb.Rows))
+	}
+}
+
+// TestConvert_TableOneOverLimit verifies that a table with 101 rows
+// (header + 100 data) splits into exactly 2 TableBlocks.
+func TestConvert_TableOneOverLimit(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString("| Col |\n|---|\n")
+	for i := 0; i < 100; i++ {
+		sb.WriteString("| val |\n")
+	}
+
+	blocks, err := Convert(sb.String())
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	}
+	tb1 := blocks[0].(*slack.TableBlock)
+	tb2 := blocks[1].(*slack.TableBlock)
+	// First table: header + 99 data rows = 100 rows.
+	if len(tb1.Rows) != 100 {
+		t.Errorf("table 1: expected 100 rows, got %d", len(tb1.Rows))
+	}
+	// Second table: header + 1 data row = 2 rows.
+	if len(tb2.Rows) != 2 {
+		t.Errorf("table 2: expected 2 rows, got %d", len(tb2.Rows))
 	}
 }
 
