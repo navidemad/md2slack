@@ -7,6 +7,13 @@ import (
 	east "github.com/yuin/goldmark/extension/ast"
 )
 
+const (
+	// Slack TableBlock API limits.
+	// https://docs.slack.dev/reference/block-kit/blocks/table-block/
+	maxTableRows    = 100 // including header row
+	maxTableColumns = 20
+)
+
 // tableState accumulates table data during AST walking.
 type tableState struct {
 	alignments []east.Alignment
@@ -29,7 +36,9 @@ func (ctx *renderContext) handleTable(n *east.Table, entering bool) {
 			return
 		}
 
-		ctx.emitBlock(ctx.tableState.renderTableBlock(ctx))
+		for _, tb := range ctx.tableState.renderTableBlocks(ctx) {
+			ctx.emitBlock(tb)
+		}
 		ctx.tableState = nil
 	}
 }
@@ -80,8 +89,9 @@ func (ctx *renderContext) handleTableCell(_ *east.TableCell, entering bool) {
 			elements = append(elements, sec)
 		}
 		if len(elements) == 0 {
-			// Empty cell: provide a minimal RichTextSection with a single space
-			// so Slack API receives non-empty text (it rejects "text":"").
+			// Empty cell: provide a minimal RichTextSection so Slack API
+			// receives "elements": [...] rather than null.
+			// Note: Slack rejects empty string text elements, so use a space.
 			elements = []slack.RichTextElement{
 				slack.NewRichTextSection(
 					slack.NewRichTextSectionTextElement(" ", nil),
@@ -93,39 +103,81 @@ func (ctx *renderContext) handleTableCell(_ *east.TableCell, entering bool) {
 	}
 }
 
-// renderTableBlock builds a *slack.TableBlock from the accumulated table data.
-func (ts *tableState) renderTableBlock(ctx *renderContext) *slack.TableBlock {
-	ctx.actionCounter++
-	blockID := fmt.Sprintf("table-%d", ctx.actionCounter)
-	tb := slack.NewTableBlock(blockID)
-
-	// Add header row.
-	if len(ts.headerRow) > 0 {
-		tb.AddRow(ts.headerRow...)
+// renderTableBlocks builds one or more [slack.TableBlock] from the accumulated
+// table data. Slack enforces a maximum of [maxTableRows] rows (including the
+// header) and [maxTableColumns] columns per table. When the data exceeds the
+// row limit, it is split across multiple TableBlocks, each carrying the same
+// header. Columns beyond [maxTableColumns] are silently truncated.
+func (ts *tableState) renderTableBlocks(ctx *renderContext) []*slack.TableBlock {
+	header := truncateRow(ts.headerRow, maxTableColumns)
+	alignments := ts.alignments
+	if len(alignments) > maxTableColumns {
+		alignments = alignments[:maxTableColumns]
 	}
 
-	// Add data rows.
-	for _, row := range ts.dataRows {
-		tb.AddRow(row...)
+	// Maximum data rows per table: total limit minus 1 for the header (if present).
+	maxDataRows := maxTableRows
+	if len(header) > 0 {
+		maxDataRows = maxTableRows - 1
 	}
 
-	// Determine column count.
-	numCols := 0
-	if len(ts.headerRow) > numCols {
-		numCols = len(ts.headerRow)
+	var tables []*slack.TableBlock
+	for start := 0; start < len(ts.dataRows) || len(tables) == 0; {
+		end := start + maxDataRows
+		if end > len(ts.dataRows) {
+			end = len(ts.dataRows)
+		}
+		chunk := ts.dataRows[start:end]
+
+		ctx.actionCounter++
+		blockID := fmt.Sprintf("table-%d", ctx.actionCounter)
+		tb := slack.NewTableBlock(blockID)
+
+		if len(header) > 0 {
+			tb.AddRow(header...)
+		}
+		for _, row := range chunk {
+			tb.AddRow(truncateRow(row, maxTableColumns)...)
+		}
+
+		tb.WithColumnSettings(buildColumnSettings(header, chunk, alignments)...)
+		tables = append(tables, tb)
+		start = end
 	}
-	for _, row := range ts.dataRows {
-		if len(row) > numCols {
-			numCols = len(row)
+
+	return tables
+}
+
+// truncateRow returns the row trimmed to at most maxCols cells.
+func truncateRow(row []*slack.RichTextBlock, maxCols int) []*slack.RichTextBlock {
+	if len(row) <= maxCols {
+		return row
+	}
+	return row[:maxCols]
+}
+
+// buildColumnSettings creates column settings based on the actual column count
+// (capped at maxTableColumns) from the header and data rows.
+func buildColumnSettings(header []*slack.RichTextBlock, dataRows [][]*slack.RichTextBlock, alignments []east.Alignment) []slack.ColumnSetting {
+	numCols := len(header)
+	for _, row := range dataRows {
+		n := len(row)
+		if n > maxTableColumns {
+			n = maxTableColumns
+		}
+		if n > numCols {
+			numCols = n
 		}
 	}
+	if numCols > maxTableColumns {
+		numCols = maxTableColumns
+	}
 
-	// Build column settings with alignment and wrapping.
 	settings := make([]slack.ColumnSetting, numCols)
 	for i := range settings {
 		settings[i].IsWrapped = true
-		if i < len(ts.alignments) {
-			switch ts.alignments[i] {
+		if i < len(alignments) {
+			switch alignments[i] {
 			case east.AlignRight:
 				settings[i].Align = slack.ColumnAlignmentRight
 			case east.AlignCenter:
@@ -137,7 +189,5 @@ func (ts *tableState) renderTableBlock(ctx *renderContext) *slack.TableBlock {
 			settings[i].Align = slack.ColumnAlignmentLeft
 		}
 	}
-	tb.WithColumnSettings(settings...)
-
-	return tb
+	return settings
 }

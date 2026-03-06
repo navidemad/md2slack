@@ -1493,6 +1493,391 @@ func TestConvert_TableCodeInCell(t *testing.T) {
 	}
 }
 
+func TestConvert_EmojiShortcodes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		check func(t *testing.T, blocks []slack.Block)
+	}{
+		{
+			name:  "single emoji becomes emoji element",
+			input: ":bar_chart:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				if len(blocks) != 1 {
+					t.Fatalf("expected 1 block, got %d: %s", len(blocks), blockJSON(t, blocks))
+				}
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				if len(sec.Elements) != 1 {
+					t.Fatalf("expected 1 element, got %d: %s", len(sec.Elements), blockJSON(t, blocks))
+				}
+				emoji, ok := sec.Elements[0].(*slack.RichTextSectionEmojiElement)
+				if !ok {
+					t.Fatalf("expected RichTextSectionEmojiElement, got %T", sec.Elements[0])
+				}
+				if emoji.Name != "bar_chart" {
+					t.Errorf("expected emoji name %q, got %q", "bar_chart", emoji.Name)
+				}
+			},
+		},
+		{
+			name:  "emoji embedded in text",
+			input: "Hello :wave: world",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				// Should be: text("Hello ") + emoji("wave") + text(" world")
+				if len(sec.Elements) < 3 {
+					t.Fatalf("expected at least 3 elements, got %d: %s", len(sec.Elements), blockJSON(t, blocks))
+				}
+				// Find the emoji element.
+				foundEmoji := false
+				for _, elem := range sec.Elements {
+					if emoji, ok := elem.(*slack.RichTextSectionEmojiElement); ok {
+						if emoji.Name == "wave" {
+							foundEmoji = true
+						}
+					}
+				}
+				if !foundEmoji {
+					t.Errorf("expected emoji element with name 'wave': %s", blockJSON(t, blocks))
+				}
+			},
+		},
+		{
+			name:  "multiple emojis",
+			input: ":thumbsup: :heart: :fire:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				var emojiNames []string
+				for _, elem := range sec.Elements {
+					if emoji, ok := elem.(*slack.RichTextSectionEmojiElement); ok {
+						emojiNames = append(emojiNames, emoji.Name)
+					}
+				}
+				expected := []string{"thumbsup", "heart", "fire"}
+				if len(emojiNames) != len(expected) {
+					t.Fatalf("expected %d emojis, got %d: %v — %s", len(expected), len(emojiNames), emojiNames, blockJSON(t, blocks))
+				}
+				for i, name := range expected {
+					if emojiNames[i] != name {
+						t.Errorf("emoji[%d]: expected %q, got %q", i, name, emojiNames[i])
+					}
+				}
+			},
+		},
+		{
+			name:  "emoji with underscore in name",
+			input: ":speech_balloon:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				emoji, ok := sec.Elements[0].(*slack.RichTextSectionEmojiElement)
+				if !ok {
+					t.Fatalf("expected emoji element, got %T: %s", sec.Elements[0], blockJSON(t, blocks))
+				}
+				if emoji.Name != "speech_balloon" {
+					t.Errorf("expected %q, got %q", "speech_balloon", emoji.Name)
+				}
+			},
+		},
+		{
+			name:  "bold emoji inherits style",
+			input: "**:fire:**",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				foundStyledEmoji := false
+				for _, elem := range sec.Elements {
+					if emoji, ok := elem.(*slack.RichTextSectionEmojiElement); ok {
+						if emoji.Name == "fire" && emoji.Style != nil && emoji.Style.Bold {
+							foundStyledEmoji = true
+						}
+					}
+				}
+				if !foundStyledEmoji {
+					t.Errorf("expected bold emoji element: %s", blockJSON(t, blocks))
+				}
+			},
+		},
+		{
+			name:  "non-emoji colons preserved as text",
+			input: "time: 10:30 and key:value",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				// None of these should match as emoji — all should be text elements.
+				for _, elem := range sec.Elements {
+					if _, ok := elem.(*slack.RichTextSectionEmojiElement); ok {
+						t.Errorf("unexpected emoji element in non-emoji text: %s", blockJSON(t, blocks))
+					}
+				}
+			},
+		},
+		{
+			name:  "emoji with plus sign",
+			input: ":+1:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				emoji, ok := sec.Elements[0].(*slack.RichTextSectionEmojiElement)
+				if !ok {
+					t.Fatalf("expected emoji element, got %T", sec.Elements[0])
+				}
+				if emoji.Name != "+1" {
+					t.Errorf("expected %q, got %q", "+1", emoji.Name)
+				}
+			},
+		},
+		{
+			name:  "emoji in list item",
+			input: "- :check: Done\n- :x: Failed",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if !strings.Contains(jsonStr, `"type": "emoji"`) {
+					t.Errorf("expected emoji elements in list items: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"name": "check"`) {
+					t.Errorf("expected check emoji in output: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"name": "x"`) {
+					t.Errorf("expected x emoji in output: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "emoji in blockquote",
+			input: "> :warning: Caution",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if !strings.Contains(jsonStr, `"type": "emoji"`) {
+					t.Errorf("expected emoji element in blockquote: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"name": "warning"`) {
+					t.Errorf("expected warning emoji in output: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "emoji JSON serialization",
+			input: ":bar_chart: :pencil: :speech_balloon:",
+			check: func(t *testing.T, blocks []slack.Block) {
+				data, err := json.Marshal(blocks)
+				if err != nil {
+					t.Fatalf("json.Marshal: %v", err)
+				}
+				jsonStr := string(data)
+				for _, name := range []string{"bar_chart", "pencil", "speech_balloon"} {
+					if !strings.Contains(jsonStr, `"name":"`+name+`"`) {
+						t.Errorf("expected emoji name %q in JSON: %s", name, jsonStr)
+					}
+				}
+				// Verify type is "emoji" not "text".
+				if !strings.Contains(jsonStr, `"type":"emoji"`) {
+					t.Errorf("expected emoji type in JSON: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "numeric-only colons in inline code not treated as emoji",
+			input: "- `19:49:41 UTC` \u2014 Job created",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				// ":49:" should NOT become an emoji element.
+				if strings.Contains(jsonStr, `"name": "49"`) {
+					t.Errorf("pure-digit :49: should not be treated as emoji: %s", jsonStr)
+				}
+				// The full timestamp should be preserved as a single text element.
+				if !strings.Contains(jsonStr, `19:49:41 UTC`) {
+					t.Errorf("expected timestamp to be preserved as text: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "time-like patterns not treated as emoji",
+			input: "At `10:30:00` and `23:59:59` the server restarted",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				// None of the numeric segments should become emojis.
+				for _, elem := range []string{`"name": "30"`, `"name": "59"`} {
+					if strings.Contains(jsonStr, elem) {
+						t.Errorf("pure-digit colon pattern should not be emoji: %s", jsonStr)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocks, err := Convert(tt.input)
+			if err != nil {
+				t.Fatalf("Convert error: %v", err)
+			}
+			tt.check(t, blocks)
+		})
+	}
+}
+
+// TestConvert_TableRowLimit verifies that a table with more than 100 rows
+// (including header) is split into multiple TableBlocks.
+func TestConvert_TableRowLimit(t *testing.T) {
+	// Build a markdown table with 1 header + 150 data rows.
+	var sb strings.Builder
+	sb.WriteString("| ID | Value |\n|---|---|\n")
+	for i := 0; i < 150; i++ {
+		sb.WriteString("| ")
+		sb.WriteString(strings.Repeat("x", 3))
+		sb.WriteString(" | ")
+		sb.WriteString(strings.Repeat("y", 3))
+		sb.WriteString(" |\n")
+	}
+
+	blocks, err := Convert(sb.String())
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+
+	// With 1 header + 150 data rows, we need 2 tables:
+	//   table 1: header + 99 data rows = 100 rows
+	//   table 2: header + 51 data rows = 52 rows
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 TableBlocks, got %d: %s", len(blocks), blockJSON(t, blocks))
+	}
+
+	tb1, ok := blocks[0].(*slack.TableBlock)
+	if !ok {
+		t.Fatalf("block[0]: expected TableBlock, got %T", blocks[0])
+	}
+	tb2, ok := blocks[1].(*slack.TableBlock)
+	if !ok {
+		t.Fatalf("block[1]: expected TableBlock, got %T", blocks[1])
+	}
+
+	// First table: header + 99 data rows = 100 rows.
+	if len(tb1.Rows) != 100 {
+		t.Errorf("table 1: expected 100 rows, got %d", len(tb1.Rows))
+	}
+	// Second table: header + 51 data rows = 52 rows.
+	if len(tb2.Rows) != 52 {
+		t.Errorf("table 2: expected 52 rows, got %d", len(tb2.Rows))
+	}
+
+	// Both should have unique block IDs.
+	if tb1.BlockID == tb2.BlockID {
+		t.Errorf("expected unique block IDs, both are %q", tb1.BlockID)
+	}
+}
+
+// TestConvert_TableExactlyAtLimit verifies that a table with exactly 100 rows
+// (header + 99 data) produces a single TableBlock.
+func TestConvert_TableExactlyAtLimit(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString("| Col |\n|---|\n")
+	for i := 0; i < 99; i++ {
+		sb.WriteString("| val |\n")
+	}
+
+	blocks, err := Convert(sb.String())
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tb := blocks[0].(*slack.TableBlock)
+	if len(tb.Rows) != 100 {
+		t.Errorf("expected 100 rows, got %d", len(tb.Rows))
+	}
+}
+
+// TestConvert_TableColumnLimit verifies that tables with more than 20 columns
+// are truncated to 20.
+func TestConvert_TableColumnLimit(t *testing.T) {
+	// Build a 25-column table.
+	var sb strings.Builder
+	for i := 0; i < 25; i++ {
+		if i > 0 {
+			sb.WriteString(" | ")
+		}
+		sb.WriteString("H")
+	}
+	sb.WriteString("\n")
+	for i := 0; i < 25; i++ {
+		if i > 0 {
+			sb.WriteString(" | ")
+		}
+		sb.WriteString("---")
+	}
+	sb.WriteString("\n")
+	for i := 0; i < 25; i++ {
+		if i > 0 {
+			sb.WriteString(" | ")
+		}
+		sb.WriteString("D")
+	}
+	sb.WriteString("\n")
+
+	blocks, err := Convert(sb.String())
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	tb := blocks[0].(*slack.TableBlock)
+
+	// All rows should have at most 20 columns.
+	for i, row := range tb.Rows {
+		if len(row) > 20 {
+			t.Errorf("row %d: expected at most 20 columns, got %d", i, len(row))
+		}
+	}
+	// Column settings should be at most 20.
+	if len(tb.ColumnSettings) > 20 {
+		t.Errorf("expected at most 20 column settings, got %d", len(tb.ColumnSettings))
+	}
+}
+
+// TestConvert_TableNoHeaderSplit verifies that a table with header + 200 data rows
+// splits into 3 TableBlocks.
+func TestConvert_TableNoHeaderSplit(t *testing.T) {
+	// Build a table with header + 200 data rows to verify splitting.
+	var sb strings.Builder
+	sb.WriteString("| A |\n|---|\n")
+	for i := 0; i < 200; i++ {
+		sb.WriteString("| x |\n")
+	}
+
+	blocks, err := Convert(sb.String())
+	if err != nil {
+		t.Fatalf("Convert error: %v", err)
+	}
+
+	// 200 data rows + header → ceil(200/99) = 3 tables.
+	// Table 1: header + 99 = 100 rows
+	// Table 2: header + 99 = 100 rows
+	// Table 3: header + 2 = 3 rows
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks, got %d", len(blocks))
+	}
+
+	tb1 := blocks[0].(*slack.TableBlock)
+	tb2 := blocks[1].(*slack.TableBlock)
+	tb3 := blocks[2].(*slack.TableBlock)
+
+	if len(tb1.Rows) != 100 {
+		t.Errorf("table 1: expected 100 rows, got %d", len(tb1.Rows))
+	}
+	if len(tb2.Rows) != 100 {
+		t.Errorf("table 2: expected 100 rows, got %d", len(tb2.Rows))
+	}
+	if len(tb3.Rows) != 3 {
+		t.Errorf("table 3: expected 3 rows, got %d", len(tb3.Rows))
+	}
+}
+
 // FuzzConvert verifies that Convert never panics on arbitrary input.
 func FuzzConvert(f *testing.F) {
 	f.Add("")
@@ -1506,6 +1891,7 @@ func FuzzConvert(f *testing.F) {
 	f.Add("- [x] done\n- [ ] todo")
 	f.Add("***bold italic***")
 	f.Add("~~strikethrough~~")
+	f.Add(":bar_chart: hello :wave: world :+1:")
 
 	f.Fuzz(func(t *testing.T, input string) {
 		_, err := Convert(input)
