@@ -1762,6 +1762,209 @@ func TestConvert_EmojiShortcodes(t *testing.T) {
 	}
 }
 
+func TestConvert_SlackMentions(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		check func(t *testing.T, blocks []slack.Block)
+	}{
+		{
+			name:  "user mention becomes user element",
+			input: "<@U06BWKC8AAE>",
+			check: func(t *testing.T, blocks []slack.Block) {
+				if len(blocks) != 1 {
+					t.Fatalf("expected 1 block, got %d: %s", len(blocks), blockJSON(t, blocks))
+				}
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				if len(sec.Elements) != 1 {
+					t.Fatalf("expected 1 element, got %d: %s", len(sec.Elements), blockJSON(t, blocks))
+				}
+				user, ok := sec.Elements[0].(*slack.RichTextSectionUserElement)
+				if !ok {
+					t.Fatalf("expected RichTextSectionUserElement, got %T: %s", sec.Elements[0], blockJSON(t, blocks))
+				}
+				if user.UserID != "U06BWKC8AAE" {
+					t.Errorf("expected user_id %q, got %q", "U06BWKC8AAE", user.UserID)
+				}
+			},
+		},
+		{
+			name:  "user mention embedded in text",
+			input: "Action: <@U06BWKC8AAE> vérification requise",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				// Should be: text("Action: ") + user(U06BWKC8AAE) + text(" vérification requise")
+				if len(sec.Elements) != 3 {
+					t.Fatalf("expected 3 elements, got %d: %s", len(sec.Elements), blockJSON(t, blocks))
+				}
+				te1 := sec.Elements[0].(*slack.RichTextSectionTextElement)
+				if te1.Text != "Action: " {
+					t.Errorf("expected %q, got %q", "Action: ", te1.Text)
+				}
+				user, ok := sec.Elements[1].(*slack.RichTextSectionUserElement)
+				if !ok {
+					t.Fatalf("expected user element, got %T", sec.Elements[1])
+				}
+				if user.UserID != "U06BWKC8AAE" {
+					t.Errorf("expected user_id %q, got %q", "U06BWKC8AAE", user.UserID)
+				}
+				te2 := sec.Elements[2].(*slack.RichTextSectionTextElement)
+				if te2.Text != " vérification requise" {
+					t.Errorf("expected %q, got %q", " vérification requise", te2.Text)
+				}
+			},
+		},
+		{
+			name:  "channel mention becomes channel element",
+			input: "See <#C0AKA3224TX>",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				foundChannel := false
+				for _, elem := range sec.Elements {
+					if ch, ok := elem.(*slack.RichTextSectionChannelElement); ok {
+						if ch.ChannelID == "C0AKA3224TX" {
+							foundChannel = true
+						}
+					}
+				}
+				if !foundChannel {
+					t.Errorf("expected channel element with id C0AKA3224TX: %s", blockJSON(t, blocks))
+				}
+			},
+		},
+		{
+			name:  "usergroup mention becomes usergroup element",
+			input: "Notify <!subteam^S042AB1CDEF>",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				foundGroup := false
+				for _, elem := range sec.Elements {
+					if ug, ok := elem.(*slack.RichTextSectionUserGroupElement); ok {
+						if ug.UsergroupID == "S042AB1CDEF" {
+							foundGroup = true
+						}
+					}
+				}
+				if !foundGroup {
+					t.Errorf("expected usergroup element with id S042AB1CDEF: %s", blockJSON(t, blocks))
+				}
+			},
+		},
+		{
+			name:  "multiple mentions in same text",
+			input: "cc <@U111AAABBB> and <@W222CCCDDD>",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				var userIDs []string
+				for _, elem := range sec.Elements {
+					if u, ok := elem.(*slack.RichTextSectionUserElement); ok {
+						userIDs = append(userIDs, u.UserID)
+					}
+				}
+				if len(userIDs) != 2 {
+					t.Fatalf("expected 2 user elements, got %d: %s", len(userIDs), blockJSON(t, blocks))
+				}
+				if userIDs[0] != "U111AAABBB" || userIDs[1] != "W222CCCDDD" {
+					t.Errorf("expected [U111AAABBB, W222CCCDDD], got %v", userIDs)
+				}
+			},
+		},
+		{
+			name:  "mixed user and channel mentions",
+			input: "<@U06BWKC8AAE> check <#C0AKA3224TX>",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if !strings.Contains(jsonStr, `"type": "user"`) {
+					t.Errorf("expected user element: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"type": "channel"`) {
+					t.Errorf("expected channel element: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "bold user mention inherits style",
+			input: "**<@U06BWKC8AAE>**",
+			check: func(t *testing.T, blocks []slack.Block) {
+				rt := blocks[0].(*slack.RichTextBlock)
+				sec := rt.Elements[0].(*slack.RichTextSection)
+				foundStyledUser := false
+				for _, elem := range sec.Elements {
+					if u, ok := elem.(*slack.RichTextSectionUserElement); ok {
+						if u.UserID == "U06BWKC8AAE" && u.Style != nil && u.Style.Bold {
+							foundStyledUser = true
+						}
+					}
+				}
+				if !foundStyledUser {
+					t.Errorf("expected bold user element: %s", blockJSON(t, blocks))
+				}
+			},
+		},
+		{
+			name:  "mention in list item",
+			input: "- Ask <@U06BWKC8AAE> to review",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if !strings.Contains(jsonStr, `"type": "user"`) {
+					t.Errorf("expected user element in list item: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"user_id": "U06BWKC8AAE"`) {
+					t.Errorf("expected user_id U06BWKC8AAE: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "mention in blockquote",
+			input: "> cc <@U06BWKC8AAE>",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if !strings.Contains(jsonStr, `"type": "user"`) {
+					t.Errorf("expected user element in blockquote: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "angle brackets without mention prefix preserved as text",
+			input: "use <div> and <span> tags",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if strings.Contains(jsonStr, `"type": "user"`) || strings.Contains(jsonStr, `"type": "channel"`) {
+					t.Errorf("HTML-like tags should not be treated as mentions: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name:  "mention combined with emoji",
+			input: ":wave: <@U06BWKC8AAE>",
+			check: func(t *testing.T, blocks []slack.Block) {
+				jsonStr := blockJSON(t, blocks)
+				if !strings.Contains(jsonStr, `"type": "emoji"`) {
+					t.Errorf("expected emoji element: %s", jsonStr)
+				}
+				if !strings.Contains(jsonStr, `"type": "user"`) {
+					t.Errorf("expected user element: %s", jsonStr)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocks, err := Convert(tt.input)
+			if err != nil {
+				t.Fatalf("Convert error: %v", err)
+			}
+			tt.check(t, blocks)
+		})
+	}
+}
+
 // TestConvert_TableRowLimit verifies that a table with more than 100 rows
 // (including header) is split into multiple TableBlocks.
 func TestConvert_TableRowLimit(t *testing.T) {

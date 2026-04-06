@@ -152,7 +152,7 @@ func (ctx *renderContext) handleParagraph(n *ast.Paragraph, entering bool) {
 				frame.elements = append(frame.elements,
 					slack.NewRichTextSectionTextElement("\n", nil))
 			}
-			resolved := resolveEmojis(ctx.inlineElements)
+			resolved := resolveInlines(ctx.inlineElements)
 			frame.elements = append(frame.elements, resolved...)
 			ctx.inlineElements = nil
 			return

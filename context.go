@@ -13,6 +13,12 @@ import (
 // names like :49:); the companion function isValidEmojiName filters out false positives.
 var emojiShortcodeRe = regexp.MustCompile(`:([a-z0-9+][a-z0-9_+\-]*):`)
 
+// slackMentionRe matches Slack mention patterns:
+//   - <@U12345>     → user mention
+//   - <#C12345>     → channel mention
+//   - <!subteam^S12345> → user group mention
+var slackMentionRe = regexp.MustCompile(`<(@[UW][A-Z0-9]+|#C[A-Z0-9]+|!subteam\^S[A-Z0-9]+)>`)
+
 // isValidEmojiName returns true if the name contains at least one ASCII letter (a-z) or
 // a plus sign. Pure-digit names like "49" from time strings (19:49:41) are not valid emojis.
 func isValidEmojiName(name string) bool {
@@ -157,12 +163,12 @@ func (ctx *renderContext) addLink(url, text string) {
 }
 
 // flushInlineToSection wraps current inline elements in a RichTextSection and returns it.
-// Clears the inline accumulator. Emoji shortcodes are resolved before flushing.
+// Clears the inline accumulator. Emoji shortcodes and Slack mentions are resolved before flushing.
 func (ctx *renderContext) flushInlineToSection() *slack.RichTextSection {
 	if len(ctx.inlineElements) == 0 {
 		return nil
 	}
-	resolved := resolveEmojis(ctx.inlineElements)
+	resolved := resolveInlines(ctx.inlineElements)
 	sec := slack.NewRichTextSection(resolved...)
 	ctx.inlineElements = nil
 	return sec
@@ -225,6 +231,64 @@ func resolveEmojis(elements []slack.RichTextSectionElement) []slack.RichTextSect
 				result = append(result, slack.NewRichTextSectionTextElement(te.Text[cursor:loc[0]], te.Style))
 			}
 			result = append(result, slack.NewRichTextSectionEmojiElement(name, 0, te.Style))
+			cursor = loc[1]
+		}
+		if cursor < len(te.Text) {
+			result = append(result, slack.NewRichTextSectionTextElement(te.Text[cursor:], te.Style))
+		}
+	}
+
+	return result
+}
+
+// resolveInlines chains all inline post-processing: emoji shortcodes and Slack mentions.
+func resolveInlines(elements []slack.RichTextSectionElement) []slack.RichTextSectionElement {
+	return resolveMentions(resolveEmojis(elements))
+}
+
+// resolveMentions post-processes a slice of RichTextSectionElements to find and convert
+// Slack mention patterns (<@U12345>, <#C12345>, <!subteam^S12345>) into proper
+// RichTextSectionUserElement, RichTextSectionChannelElement, or
+// RichTextSectionUserGroupElement objects.
+func resolveMentions(elements []slack.RichTextSectionElement) []slack.RichTextSectionElement {
+	if len(elements) == 0 {
+		return elements
+	}
+
+	var result []slack.RichTextSectionElement
+	for _, elem := range elements {
+		te, ok := elem.(*slack.RichTextSectionTextElement)
+		if !ok {
+			result = append(result, elem)
+			continue
+		}
+
+		matches := slackMentionRe.FindAllStringSubmatchIndex(te.Text, -1)
+		if matches == nil {
+			result = append(result, elem)
+			continue
+		}
+
+		cursor := 0
+		for _, loc := range matches {
+			// loc[0]:loc[1] is the full match (e.g. "<@U12345>")
+			// loc[2]:loc[3] is capture group 1 (e.g. "@U12345")
+			if loc[0] > cursor {
+				result = append(result, slack.NewRichTextSectionTextElement(te.Text[cursor:loc[0]], te.Style))
+			}
+
+			inner := te.Text[loc[2]:loc[3]]
+			switch {
+			case strings.HasPrefix(inner, "@"):
+				// User mention: @U12345 or @W12345
+				result = append(result, slack.NewRichTextSectionUserElement(inner[1:], te.Style))
+			case strings.HasPrefix(inner, "#"):
+				// Channel mention: #C12345
+				result = append(result, slack.NewRichTextSectionChannelElement(inner[1:], te.Style))
+			case strings.HasPrefix(inner, "!subteam^"):
+				// User group mention: !subteam^S12345
+				result = append(result, slack.NewRichTextSectionUserGroupElement(inner[len("!subteam^"):]))
+			}
 			cursor = loc[1]
 		}
 		if cursor < len(te.Text) {
