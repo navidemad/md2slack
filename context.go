@@ -78,10 +78,21 @@ type renderContext struct {
 
 // listFrame tracks one level of list nesting.
 type listFrame struct {
-	style       slack.RichTextListElementType // RTEListOrdered or RTEListBullet
-	items       []slack.RichTextElement       // accumulated RichTextSection items
-	indent      int
-	nestedLists []slack.RichTextElement // nested lists collected from children, emitted as siblings
+	style    slack.RichTextListElementType // RTEListOrdered or RTEListBullet
+	items    []slack.RichTextElement       // open segment of sibling items at this indent
+	indent   int
+	elements []slack.RichTextElement // interleaved rich_text_list siblings for this level
+}
+
+// flushItems closes the current item segment as a RichTextList.
+// Slack associates a nested list with the previous lower-indent item, so
+// parent items must be emitted before their children — not after later siblings.
+func (f *listFrame) flushItems() {
+	if len(f.items) == 0 {
+		return
+	}
+	f.elements = append(f.elements, slack.NewRichTextList(f.style, f.indent, f.items...))
+	f.items = nil
 }
 
 // blockquoteFrame tracks one level of blockquote nesting.

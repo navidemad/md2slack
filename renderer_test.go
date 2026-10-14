@@ -420,36 +420,30 @@ func TestConvert_NestedList(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected RichTextBlock, got %T", blocks[0])
 	}
-	// Should have the parent list and the nested list as sibling elements
-	// in the same RichTextBlock (not nested inside each other).
-	if len(rt.Elements) < 2 {
-		t.Fatalf("expected at least 2 elements (parent list + nested list), got %d: %s",
+	// Slack nests by sibling lists + indent. Children of the first parent must
+	// appear before later siblings, otherwise they attach to the wrong item:
+	//   indent 0: Parent
+	//   indent 1: Child A, Child B
+	//   indent 0: Another parent
+	if len(rt.Elements) != 3 {
+		t.Fatalf("expected 3 list elements (parent, nested, next parent), got %d: %s",
 			len(rt.Elements), blockJSON(t, blocks))
 	}
-	// The top-level list
-	list, ok := rt.Elements[0].(*slack.RichTextList)
+
+	parent, ok := rt.Elements[0].(*slack.RichTextList)
 	if !ok {
 		t.Fatalf("expected RichTextList, got %T", rt.Elements[0])
 	}
-	if list.Style != slack.RTEListBullet {
-		t.Errorf("expected bullet style, got %q", list.Style)
+	if parent.Style != slack.RTEListBullet {
+		t.Errorf("expected bullet style, got %q", parent.Style)
 	}
-	if list.Indent != 0 {
-		t.Errorf("expected indent 0 for parent list, got %d", list.Indent)
+	if parent.Indent != 0 {
+		t.Errorf("expected indent 0 for parent list, got %d", parent.Indent)
 	}
-	if len(list.Elements) != 2 {
-		t.Errorf("expected 2 items in parent list ('Parent' and 'Another parent'), got %d", len(list.Elements))
+	if len(parent.Elements) != 1 {
+		t.Errorf("expected 1 item in first parent list, got %d", len(parent.Elements))
 	}
-	// Verify parent list item text survived conversion.
-	// Goldmark splits text at spaces into multiple text nodes, so check
-	// individual words rather than multi-word phrases.
-	jsonStr := blockJSON(t, blocks)
-	for _, text := range []string{"Parent", "Another", "parent"} {
-		if !strings.Contains(jsonStr, text) {
-			t.Errorf("expected %q text in output: %s", text, jsonStr)
-		}
-	}
-	// The nested list should be a sibling element with indent 1
+
 	nestedList, ok := rt.Elements[1].(*slack.RichTextList)
 	if !ok {
 		t.Fatalf("expected RichTextList for nested list, got %T", rt.Elements[1])
@@ -460,7 +454,22 @@ func TestConvert_NestedList(t *testing.T) {
 	if len(nestedList.Elements) != 2 {
 		t.Errorf("expected 2 items in nested list, got %d", len(nestedList.Elements))
 	}
-	for _, text := range []string{"Child", "A", "B"} {
+
+	nextParent, ok := rt.Elements[2].(*slack.RichTextList)
+	if !ok {
+		t.Fatalf("expected RichTextList for next parent, got %T", rt.Elements[2])
+	}
+	if nextParent.Indent != 0 {
+		t.Errorf("expected indent 0 for next parent list, got %d", nextParent.Indent)
+	}
+	if len(nextParent.Elements) != 1 {
+		t.Errorf("expected 1 item in next parent list, got %d", len(nextParent.Elements))
+	}
+
+	// Goldmark splits text at spaces into multiple text nodes, so check
+	// individual words rather than multi-word phrases.
+	jsonStr := blockJSON(t, blocks)
+	for _, text := range []string{"Parent", "Another", "parent", "Child", "A", "B"} {
 		if !strings.Contains(jsonStr, text) {
 			t.Errorf("expected %q text in output: %s", text, jsonStr)
 		}
